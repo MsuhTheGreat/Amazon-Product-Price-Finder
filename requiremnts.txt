@@ -1,0 +1,9 @@
+pandas
+requests
+openpyxl
+python-dotenv
+undetected-chromedriver
+selenium
+google-api-python-client
+google-auth
+google-auth-oauthlib
