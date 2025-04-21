@@ -1,5 +1,18 @@
-*venv
-*.env
+# Python Virtual Environment
+venv/
+
+# Environment and Credentials
+.env
+.env.*
 *.json
+service_account.json
+
+# Cache, Outputs, and Logs
+__pycache__/
+*.pyc
+*.pyo
+*.log
+
+# Scraper Output
 new/
 old/

@@ -21,6 +21,11 @@ load_dotenv()
 DRIVE_FOLDER_ID = os.getenv("DRIVE_FOLDER_ID")
 ALERTZY_ACCOUNT_KEY = os.getenv("ALERTZY_ACCOUNT_KEY")
 ALERTZY_URL = "https://alertzy.app/send"
+CHROME_DATA_DIR = os.getenv("CHROME_DATA_DIR")
+CHROME_PROFILE = os.getenv("CHROME_PROFILE", "Default")
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
+HEADLESS = os.getenv("HEADLESS", "false")
+
 
 def initialize_project():
     os.makedirs("old", exist_ok=True)
@@ -172,7 +177,8 @@ def main():
             break
         elif user == "add":
             item = input("Enter item name: ")
-            items.append(item)
+            if item not in items:
+                items.append(item)
             print("Done!")
         elif user == "remove":
             item = input("Enter item name: ")
@@ -184,13 +190,15 @@ def main():
     for item in items:
         try:
             options = ChromeOptions()
-            user_data_dir = r"C:\Users\Global Computers\AppData\Local\Google\Chrome\User Data"  # Windows example
-            profile_dir = "Profile 5"  # Or whichever number/name it is
+            user_data_dir = rf"{CHROME_DATA_DIR}"
+            profile_dir = CHROME_PROFILE
+            headless = HEADLESS
 
-            options.add_argument(f"--user-data-dir={user_data_dir}")
-            options.add_argument(f"--profile-directory={profile_dir}")
-
-            # options.add_argument("--headless")
+            if user_data_dir:
+                options.add_argument(f"--user-data-dir={user_data_dir}")
+                options.add_argument(f"--profile-directory={profile_dir}")
+            if headless.lower() == "true":
+                options.add_argument("--headless")
 
             search = item
 
@@ -250,7 +258,10 @@ def main():
         except Exception as e:
             print(f"Error: {e}")
         finally:
-            driver.quit()
+            try:
+                driver.quit()
+            except:
+                pass
 
 
 if __name__ == "__main__":
