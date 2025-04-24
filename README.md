@@ -120,7 +120,7 @@ python price_finder.py
 
 ## 🔮 Planned Enhancements
 
-- Support **multiple sites like Ali Baba, Adidas etc**
+- Support **multiple sites like Alibaba, Adidas etc**
 - Add **robust error logging** and retry logic
 - Extend **alert support** to include email and Telegram
 - Create a simple **Tkinter GUI** for user-friendly execution
