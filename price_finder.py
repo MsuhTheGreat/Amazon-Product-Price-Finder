@@ -8,9 +8,9 @@ import pandas as pd
 from dotenv import load_dotenv
 import os
 import json
+import time
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
 from googleapiclient.errors import HttpError
 import requests
 from time import sleep
@@ -206,7 +206,7 @@ def main():
             web = "https://www.amazon.com/"
             driver.get(web)
 
-            wait = WebDriverWait(driver, 60)
+            wait = WebDriverWait(driver, 20)
 
             search_xpath = '//*[@id="twotabsearchtextbox"]'
             wait.until(EC.presence_of_element_located((By.XPATH, search_xpath)))
@@ -265,4 +265,7 @@ def main():
 
 
 if __name__ == "__main__":
+    tic = time.time()
     main()
+    toc = time.time()
+    print(f"Program Running Time: {toc-tic} sec")
