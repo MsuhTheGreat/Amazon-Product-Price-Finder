@@ -15,7 +15,7 @@ from googleapiclient.errors import HttpError
 import requests
 from time import sleep
 from random import randint
-
+# chrome.exe --user-data-dir="D:/ChromeProfileForAutomation" --profile-directory=FirstAmazonScraperBot
 load_dotenv()
 
 DRIVE_FOLDER_ID = os.getenv("DRIVE_FOLDER_ID")
@@ -208,7 +208,7 @@ def main():
 
             wait = WebDriverWait(driver, 20)
 
-            search_xpath = '//*[@id="twotabsearchtextbox"]'
+            search_xpath = '//input[@placeholder="Search Amazon" or @aria-label="Search"]'
             wait.until(EC.presence_of_element_located((By.XPATH, search_xpath)))
             search_box = driver.find_element(By.XPATH, search_xpath)
             search_box.send_keys(search + Keys.ENTER)
