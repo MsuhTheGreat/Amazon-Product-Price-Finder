@@ -198,7 +198,7 @@ def main():
                 options.add_argument(f"--user-data-dir={user_data_dir}")
                 options.add_argument(f"--profile-directory={profile_dir}")
             if headless.lower() == "true":
-                options.add_argument("--headless")
+                options.add_argument("--headless=new")
 
             search = item
 
