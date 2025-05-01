@@ -18,13 +18,16 @@ This project integrates data collection, transformation, comparison, alerting, a
   Compares current prices against historical data and flags any drops equal to or greater than **10%**.
 
 - 📊 **Excel Integration**  
-  Reads product item names from an `items.json` file and writes products' information into    `.xlsx` spreadsheets for offline analysis.
+  Reads product item names from an `items.json` file and writes products' information into `.xlsx` spreadsheets for offline analysis.
 
 - 📤 **Google Sheets Sync**  
   Automatically uploads the final comparison results to a linked **Google Sheets** document using the **Google Sheets API**.
 
 - 🔔 **Real-Time Notifications**  
   Sends alert messages through the **Alertzy API** whenever a price drop is detected, helping users to act quickly.
+
+- 👤 **Profile Handling**  
+  Allows users to create and manage multiple profiles, each containing distinct product lists for tracking. This enables different settings for different users or use cases, making the tool more flexible and user-friendly.
 
 ---
 
@@ -96,14 +99,17 @@ pip install -r requirements.txt
 ## ▶️ How to Use
 
 1. **Prepare the .env File**  
-   - Enter your  credentials in `.env` file according to `.env.example` file
+   - Enter your credentials in `.env` file according to `.env.example` file
 
-2. **Run the Script**
+2. **Create or Choose a Profile**  
+   - The script supports creating multiple profiles. Simply store each profile configuration in a separate file inside the `profiles/` directory. You can specify which profile to use by editing the `profile` field in your `.env` file.
+
+3. **Run the Script**
 ```bash
 python price_finder.py
 ```
 
-3. **View the Output**  
+4. **View the Output**  
    - Updated prices and detected drops will be written to `new/`  
    - After comparison, the same data will be written to another file in `old/` for future comparison
    - Price drop alerts will be pushed to your Alertzy device  
@@ -120,7 +126,7 @@ python price_finder.py
 
 ## 🔮 Planned Enhancements
 
-- Support **multiple sites like Alibaba, Adidas etc**
+- Support **multiple sites like Alibaba, Adidas, etc.**
 - Add **robust error logging** and retry logic
 - Extend **alert support** to include email and Telegram
 - Create a simple **Tkinter GUI** for user-friendly execution
@@ -138,4 +144,4 @@ This project was designed and developed by [@MsuhTheGreat](https://github.com/Ms
 
 ## 📄 License
 
-TThis project is licensed under the **MIT License** – see the [LICENSE](./LICENSE) file for details.
+This project is licensed under the **MIT License** – see the [LICENSE](./LICENSE) file for details.

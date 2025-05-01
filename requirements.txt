@@ -1,9 +1,8 @@
-pandas
-requests
-openpyxl
-python-dotenv
-undetected-chromedriver
-selenium
-google-api-python-client
-google-auth
-google-auth-oauthlib
+undetected-chromedriver==3.5.5
+selenium==4.31.0
+python-dotenv==1.0.1
+google-auth==2.39.0
+google-api-python-client==2.167.0
+requests==2.32.3
+pandas==2.2.3
+psutil==7.0.0
