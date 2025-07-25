@@ -1,322 +1,304 @@
+"""
+Amazon Price Tracker Bot
+--------------------------
+Scrapes Amazon product prices using Selenium and notifies users of significant drops.
+Data is saved locally and synced with a Google Sheet.
+
+Features:
+- Persistent Chrome profile using undetected_chromedriver
+- Google Sheets API integration for cloud sync
+- Alertzy notifications for price drops
+- Supports product search customization
+- Detects and compares old vs new product prices
+"""
+
+# ----------------------------------------
+# Imports
+# ----------------------------------------
+
 import os
 import json
 import shutil
+import sys
 from time import sleep, time
 from random import randint
+from pathlib import Path
+
+import pandas as pd
+import requests
+from dotenv import load_dotenv
 from undetected_chromedriver import Chrome, ChromeOptions
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.support import expected_conditions as EC
-from dotenv import load_dotenv
+from selenium.common.exceptions import NoSuchElementException
+
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-import requests
-import pandas as pd
-import sys
-from pathlib import Path
 
-# Load environment variables
+# ----------------------------------------
+# Constants and Configuration
+# ----------------------------------------
+
 load_dotenv(".env")
 
-# Global constants from environment variables
-ALERTZY_URL         = "https://alertzy.app/send"
-ALERTZY_ACCOUNT_KEY = os.getenv("ALERTZY_ACCOUNT_KEY", "")
-CHROME_DATA_DIR     = os.getenv("CHROME_DATA_DIR", "")
-CHROME_PROFILE      = os.getenv("CHROME_PROFILE", "")
-SPREADSHEET_ID      = os.getenv("SPREADSHEET_ID", "")
-HEADLESS            = os.getenv("HEADLESS", "false")
+# Environment variables
+ALERTZY_ACCOUNT_KEY  = os.getenv("ALERTZY_ACCOUNT_KEY", "")
+CHROME_DATA_DIR      = Path(os.getenv("CHROME_DATA_DIR", ""))
+CHROME_PROFILE       = Path(os.getenv("CHROME_PROFILE", ""))
+SPREADSHEET_ID       = os.getenv("SPREADSHEET_ID", "")
+HEADLESS             = os.getenv("HEADLESS", "false").lower()
+ALERTZY_URL          = "https://alertzy.app/send"
+WAIT_TIME            = 20
+PERCENTAGE_THRESHOLD = input("Enter the percentage dropdown you want to recieve notifications for: ")
+try: PERCENTAGE_THRESHOLD = float(PERCENTAGE_THRESHOLD)
+except: PERCENTAGE_THRESHOLD = 10
 
-# Converting paths into Path objects
-CHROME_DATA_DIR = Path(CHROME_DATA_DIR)
-CHROME_PROFILE = Path(CHROME_PROFILE)
-
-# Webdriver wait
-WAIT_TIME = 20
-
-# Check if environment variables are absent
+# Exit if required env vars are missing
 if not ALERTZY_ACCOUNT_KEY or not CHROME_DATA_DIR or not CHROME_PROFILE or not SPREADSHEET_ID or not os.path.exists("service_account.json"):
     if not ALERTZY_ACCOUNT_KEY:                    print("❌ Alertzy Account Key is not set. Set it inside the .env file.")
     if not CHROME_DATA_DIR:                        print("❌ Chrome Data Directory is not set. Set it inside the .env file.")
     if not CHROME_PROFILE:                         print("❌ Chrome Profile is not set. Set it inside the .env file.")
     if not SPREADSHEET_ID:                         print("❌ Spreadsheet ID is not set. Set it inside the .env file.")
-    if not os.path.exists("service_account.json"): print("❌ Service Account JSON file not found. Create 'service_account.json' first.")
-    print("Scraper Exiting now...")
-    sys.exit(1)
+    if not os.path.exists("service_account.json"): print("❌ Service Account JSON file not found. Create 'service_account.json' first and place it in the directory.")
+    sys.exit("❌ Exiting... Please fix your environment setup.")
 
+# ----------------------------------------
+# Utilities
+# ----------------------------------------
 
 def initialize_project():
-    """Initial setup: Create directories and initialize items.json if not present."""
+    """Create necessary folders and initialize `items.json` if not present."""
     os.makedirs("old", exist_ok=True)
     os.makedirs("new", exist_ok=True)
     if not os.path.exists("items.json"):
-        with open("items.json", "w") as file:
-            json.dump([], file, indent=4)
-
+        with open("items.json", "w") as f:
+            json.dump([], f, indent=4)
 
 def find_text(parent, by, value):
     """
-    Find text for an element.
+    Extracts text from an element, returning 'N/A' if not found.
 
     Args:
-        parent (WebElement): The parent element to search within.
-        by (By): The locator strategy to use.
-        value (str): The value of the locator to search for.
+        parent (WebElement): Parent element.
+        by (By): Locator strategy.
+        value (str): Locator value.
 
     Returns:
-        str: The extracted text, or "N/A" if not found.
+        str: Extracted text or 'N/A'.
     """
     try:
         return parent.find_element(by, value).text.strip()
     except NoSuchElementException:
         return "N/A"
     except Exception as e:
-        print(f"❌ {e}")
+        print(f"❌ Error in find_text function: {e}")
         print("-" * 40)
         return "N/A"
 
+def create_new_profile():
+    """
+    Initializes a new Chrome user profile for Amazon.
+    Requires user to manually accept cookies on Amazon.
+    """
+    profile_path = CHROME_DATA_DIR / CHROME_PROFILE
+
+    if not CHROME_DATA_DIR.exists():
+        CHROME_DATA_DIR.mkdir(parents=True)
+
+    if profile_path.exists():
+        shutil.rmtree(profile_path)
+
+    print(f"🔐 Creating Chrome profile: {CHROME_PROFILE}")
+    print("🥇 Log into your Google account.")
+    print("🥈 Visit Amazon and accept cookies. (optional)")
+    print("🥉 Close browser once done.\n")
+
+    options = ChromeOptions()
+    options.add_argument(f"--user-data-dir={CHROME_DATA_DIR}")
+    options.add_argument(f"--profile-directory={CHROME_PROFILE}")
+    driver = Chrome(options=options)
+
+    try:
+        while True:
+            driver.title  # Keeps session alive until closed
+            sleep(0.5)
+    except:
+        driver.quit()
+        print("✅ Chrome profile setup completed.")
+
+# ----------------------------------------
+# Scraping Functions
+# ----------------------------------------
 
 def scrap_products(wait, title_lst, price_lst, asin_lst):
     """
-    Scrape product details (title, price, and ASIN) from the current page.
+    Scrapes products from current Amazon search results page.
 
     Args:
-        driver (WebDriver): The Selenium WebDriver instance.
-        wait (WebDriverWait): WebDriverWait instance for waiting for elements.
-        title_lst (list): List to store product titles.
-        price_lst (list): List to store product prices.
-        asin_lst (list): List to store ASINs.
+        wait (WebDriverWait): Selenium wait instance.
+        title_lst (list): Output list for product titles.
+        price_lst (list): Output list for prices.
+        asin_lst (list): Output list for ASINs.
     """
-    products_xpath = '//div[@data-component-type="s-search-result"]'
-    products = wait.until(EC.presence_of_all_elements_located((By.XPATH, products_xpath)))
+    product_selector = '//div[@data-component-type="s-search-result"]'
+    products = wait.until(EC.presence_of_all_elements_located((By.XPATH, product_selector)))
 
     for product in products:
         title = find_text(product, By.TAG_NAME, 'h2')
         price_whole = find_text(product, By.CLASS_NAME, 'a-price-whole').replace(",", "")
         price_fraction = find_text(product, By.CLASS_NAME, 'a-price-fraction')
-        
+
         if price_whole == "N/A":
-            print("❌ Skipping product with missing price")
+            print("⚠️ Skipping product with no price")
             print("-" * 40)
             continue
-        
-        price = f"{price_whole}.{price_fraction if price_fraction != 'N/A' else '00'}"
-        price = float(price)
+
+        price = float(f"{price_whole}.{price_fraction if price_fraction != 'N/A' else '00'}")
         asin = product.get_attribute("data-asin")
 
         title_lst.append(title)
         price_lst.append(price)
         asin_lst.append(asin)
 
-        print(f"Title: {title}")
-        print(f"Price: {price}")
-        print(f"ASIN: {asin}")
+        print(f"🛒 {title}")
+        print(f"💲 {price}")
+        print(f"🔗 ASIN: {asin}")
         print("-" * 40)
-
 
 def send_alert(message):
     """
-    Send an alert using the Alertzy API.
+    Sends a price drop notification via Alertzy.
 
     Args:
-        message (str): The message to send.
+        message (str): Message to send.
     """
-    group = "My Amazon Scraper"
-    params = {
+    payload = {
         "accountKey": ALERTZY_ACCOUNT_KEY,
         "title": "Dropage In Prices",
         "message": message,
-        "group": group
+        "group": "My Amazon Scraper"
     }
 
     try:
-        response = requests.post(url=ALERTZY_URL, json=params)
+        response = requests.post(ALERTZY_URL, json=payload)
         response.raise_for_status()
-        print(response.text)
-        print("Message Sent!")
+        print("📲 Notification sent!")
+        print(f"Response Text: {response.text}")
     except Exception as e:
-        print(f"❌ {e}")
+        print(f"❌ Failed to send alert: {e}")
         print("-" * 40)
-
 
 def upload_df_to_gsheet(df, sheet_name):
     """
-    Upload a DataFrame to a Google Sheets document.
+    Uploads a DataFrame to Google Sheets.
 
     Args:
-        df (DataFrame): The DataFrame to upload.
-        sheet_name (str): The name of the sheet in the spreadsheet.
+        df (pd.DataFrame): Data to upload.
+        sheet_name (str): Tab name.
     """
-    for i in range(3):
+    for attempt in range(3):
         try:
             creds = service_account.Credentials.from_service_account_file(
                 "service_account.json",
                 scopes=["https://www.googleapis.com/auth/spreadsheets"]
             )
             service = build("sheets", "v4", credentials=creds)
-            spreadsheet_id = os.getenv("SPREADSHEET_ID")
 
-            # Convert DataFrame to list of lists
-            values = [df.columns.tolist()] + df.values.tolist()
-
-            # Delete sheet if it exists
-            spreadsheet = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-            sheet_id = None
+            # Delete existing sheet
+            spreadsheet = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
             for sheet in spreadsheet['sheets']:
                 if sheet['properties']['title'] == sheet_name:
                     sheet_id = sheet['properties']['sheetId']
+                    service.spreadsheets().batchUpdate(
+                        spreadsheetId=SPREADSHEET_ID,
+                        body={"requests": [{"deleteSheet": {"sheetId": sheet_id}}]}
+                    ).execute()
                     break
 
-            if sheet_id is not None:
-                batch_update_request = {
-                    "requests": [
-                        {"deleteSheet": {"sheetId": sheet_id}}
-                    ]
-                }
-                service.spreadsheets().batchUpdate(
-                    spreadsheetId=spreadsheet_id,
-                    body=batch_update_request
-                ).execute()
-
             # Add new sheet
-            add_sheet_request = {
-                "requests": [
-                    {
-                        "addSheet": {
-                            "properties": {
-                                "title": sheet_name
-                            }
-                        }
-                    }
-                ]
-            }
             service.spreadsheets().batchUpdate(
-                spreadsheetId=spreadsheet_id,
-                body=add_sheet_request
+                spreadsheetId=SPREADSHEET_ID,
+                body={"requests": [{"addSheet": {"properties": {"title": sheet_name}}}]}
             ).execute()
 
-            # Upload data
-            range_name = f"{sheet_name}!A1"
-            body = {
-                "values": values
-            }
+            # Upload values
+            values = [df.columns.tolist()] + df.values.tolist()
             service.spreadsheets().values().update(
-                spreadsheetId=spreadsheet_id,
-                range=range_name,
+                spreadsheetId=SPREADSHEET_ID,
+                range=f"{sheet_name}!A1",
                 valueInputOption="RAW",
-                body=body
+                body={"values": values}
             ).execute()
 
-            print(f"✅ Uploaded to Google Sheet tab: {sheet_name}")
-            break
+            print(f"✅ Data uploaded to sheet: {sheet_name}")
+            return
 
         except Exception as e:
-            print(f"❌ An error occurred: {e}")
-            if i != 2:
-                print("🔁 Retrying...")
+            print(f"❌ Upload attempt {attempt + 1} failed: {e}")
+            if attempt < 2:
+                print("🔁 Retrying...\n")
                 sleep(2)
-            else: print("❌ Failed to upload after 3 retries.")
-        print("-" * 40)
+            else:
+                print("🛑 Giving up after 3 attempts.")
+    print("-" * 40)
 
-
-def create_new_profile():
-    """
-    Creates a new Chrome profile directory and prompts the user to configure it manually.
-    """
-    profile_path = CHROME_DATA_DIR / CHROME_PROFILE
-
-    if not os.path.exists(CHROME_DATA_DIR):
-        os.makedirs(CHROME_DATA_DIR)
-
-    if os.path.exists(profile_path):
-        shutil.rmtree(profile_path)
-
-    print(f"Creating Chrome profile: {CHROME_PROFILE}")
-    print("🔒 Please log in to your Google Account. Then go to Amazon and accept cookies. You do not need to sign into Amazon. This is a one-time setup requirement. After that, close the browser.\n")
-    sleep(2)
-    print("Creating Chrome Profile...")
-    sleep(2)
-    print(f"✅ Profile '{CHROME_PROFILE}' created successfully!")
-    sleep(1)
-
-    options = ChromeOptions()
-    options.add_argument(f"--user-data-dir={CHROME_DATA_DIR}")
-    options.add_argument(f"--profile-directory={CHROME_PROFILE}")
-    driver = Chrome(options)
-    try:
-        while True:
-            driver.title
-            sleep(0.5)
-    except:
-        pass
-
+# ----------------------------------------
+# Main Program
+# ----------------------------------------
 
 def main():
-    """Main execution loop of the Amazon price scraper."""
+    """Main scraping and comparison loop."""
     initialize_project()
 
     with open("items.json", "r") as file:
         items = json.load(file)
 
+    # Allow user to edit product list
     while True:
-        print(f"Items to Search: {items}")
-        user = input("Do you want to remove or add any item from the list? If no, enter 'no'. If want to add, enter 'add'. If want to remove, enter 'remove'.\nEnter your choice: ").lower()
-        if user == "no":
-            with open("items.json", "w") as file:
-                json.dump(items, file, indent=4)
+        print(f"\n📦 Items to Search: {items}")
+        choice = input("Type 'no' to continue, 'add' to add item, 'remove' to remove item: ").lower()
+        if choice == "no":
             break
-        elif user == "add":
+        elif choice == "add":
             item = input("Enter item name: ")
-            if item not in items:
-                items.append(item)
-            print("Done!")
-        elif user == "remove":
+            if item not in items: items.append(item)
+        elif choice == "remove":
             item = input("Enter item name: ")
-            if item in items:
-                items.remove(item)
-            else:
-                print("Item not in list.")
+            if item in items: items.remove(item)
         else:
-            print("Behave yourself!")
-        
-    profile_path = CHROME_DATA_DIR / CHROME_PROFILE
-    if not os.path.exists(profile_path):
+            print("⚠️ Invalid input.")
+    with open("items.json", "w") as file:
+        json.dump(items, file, indent=4)
+
+    # Profile setup
+    if not (CHROME_DATA_DIR / CHROME_PROFILE).exists():
         create_new_profile()
 
+    # Search each item
     for item in items:
         driver = None
         try:
             options = ChromeOptions()
-            headless = HEADLESS
-
             options.add_argument(f"--user-data-dir={CHROME_DATA_DIR}")
             options.add_argument(f"--profile-directory={CHROME_PROFILE}")
-            
-            if headless.lower() == "true":
-                options.add_argument("--headless")
-            print(f"Headless mode is set to: {headless}")
-
-            search = item
-
+            if HEADLESS == "true":
+                options.add_argument("--headless=new")
             driver = Chrome(options=options)
-            web = "https://www.amazon.com/"
-            driver.get(web)
-
             wait = WebDriverWait(driver, WAIT_TIME)
 
-            search_xpath = '//input[contains(@placeholder, "Search Amazon") or contains(@aria-label, "Search") or contains(@id, "nav-bb-search")]'
-            search_box = wait.until(EC.presence_of_element_located((By.XPATH, search_xpath)))
-            search_box.send_keys(search + Keys.ENTER)
+            driver.get("https://www.amazon.com/")
+            search_selector = '//input[contains(@placeholder, "Search Amazon") or contains(@aria-label, "Search") or contains(@id, "nav-bb-search")]'
+            search_box = wait.until(EC.presence_of_element_located((By.XPATH, search_selector)))
+            search_box.send_keys(item + Keys.ENTER)
 
-            title_lst = []
-            price_lst = []
-            asin_lst = []
-            next_button_xpath = '//a[contains(@class, "s-pagination-next")]'
-            for i in range(3):
+            title_lst, price_lst, asin_lst = [], [], []
+            for _ in range(3):  # scrape 3 pages
                 scrap_products(wait, title_lst, price_lst, asin_lst)
                 try:
-                    next_button = wait.until(EC.presence_of_element_located((By.XPATH, next_button_xpath)))
+                    next_button_selector = '//a[contains(@class, "s-pagination-next")]'
+                    next_button = wait.until(EC.presence_of_element_located((By.XPATH, next_button_selector)))
                     next_button.click()
                     sleep(randint(2, 5))
                 except Exception as e:
@@ -324,44 +306,43 @@ def main():
                     print("-" * 40)
                     break
 
-            df = pd.DataFrame({
-                "Title": title_lst,
-                "Price": price_lst,
-                "ASIN": asin_lst
-            })
+            df = pd.DataFrame({"Title": title_lst, "Price": price_lst, "ASIN": asin_lst})
+            search_tag = item.replace(" ", "_")
 
-            df.to_excel(f"new/{search.replace(' ', '_')}.xlsx", index=False, engine="openpyxl")
+            df.to_excel(f"new/{search_tag}.xlsx", index=False, engine="openpyxl")
 
-            if os.path.exists(f"old/{search.replace(' ', '_')}.xlsx"):
-                old_df = pd.read_excel(f"old/{search.replace(' ', '_')}.xlsx")
-
-                merged_df = df.merge(old_df, on="ASIN", suffixes=("_new", "_old"))
-                merged_df = merged_df[merged_df["Price_old"] != 0]
-                merged_df["Price_Drop_%"] = (merged_df["Price_new"] - merged_df["Price_old"]) / merged_df["Price_old"] * 100
-                significant_drops = merged_df[merged_df["Price_Drop_%"] >= 10]
-                if not significant_drops.empty:
-                    message_lines = []
-                    for _, row in significant_drops.iterrows():
-                        line = f"{row['Title_new']}\nOld Price: {row['Price_old']:.2f}\nNew Price: {row['Price_new']:.2f}\nASIN: {row['ASIN']}"
-                        message_lines.append(line)
-                    message = "\n\n\n".join(message_lines)
+            # Compare with old prices
+            old_path = f"old/{search_tag}.xlsx"
+            if os.path.exists(old_path):
+                old_df = pd.read_excel(old_path)
+                merged = df.merge(old_df, on="ASIN", suffixes=("_new", "_old"))
+                merged = merged[merged["Price_old"] != 0]
+                merged["Price_Drop_%"] = (merged["Price_new"] - merged["Price_old"]) / merged["Price_old"] * 100
+                drops = merged[merged["Price_Drop_%"] >= PERCENTAGE_THRESHOLD]
+                if not drops.empty:
+                    message = "\n\n\n".join(
+                        f"{row['Title_new']}\nOld: ${row['Price_old']:.2f}\nNew: ${row['Price_new']:.2f}\nASIN: {row['ASIN']}"
+                        for _, row in drops.iterrows())
                     send_alert(message)
 
-            df.to_excel(f"old/{search.replace(' ', '_')}.xlsx", index=False, engine="openpyxl")
-
+            # Save new data
+            df.to_excel(old_path, index=False, engine="openpyxl")
             upload_df_to_gsheet(df, item)
-            sleep(randint(2, 7))
+
+            sleep(randint(2, 5))
 
         except Exception as e:
-            print(f"An error occurred: {e}")
+            print(f"❌ Error while processing '{item}': {e}")
         finally:
-            if driver:
-                driver.quit()
+            if driver: driver.quit()
             print("-" * 40)
 
+# ----------------------------------------
+# Entry Point
+# ----------------------------------------
 
 if __name__ == "__main__":
-    tic = time()
+    start = time()
     main()
-    toc = time()
-    print(f"Program executing time: {round((toc-tic) / 60, 2)} min")
+    end = time()
+    print(f"\n⏰ Total Execution Time: {round((end - start) / 60, 2)} minutes")
