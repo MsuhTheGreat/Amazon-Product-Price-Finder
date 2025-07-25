@@ -17,19 +17,35 @@ import requests
 import pandas as pd
 import subprocess
 import psutil
+import sys
+from pathlib import Path
 
 # Load environment variables
 load_dotenv(".env")
 
 # Global constants from environment variables
-DRIVE_FOLDER_ID = os.getenv("DRIVE_FOLDER_ID")
-ALERTZY_ACCOUNT_KEY = os.getenv("ALERTZY_ACCOUNT_KEY")
-ALERTZY_URL = "https://alertzy.app/send"
-CHROME_DATA_DIR = os.getenv("CHROME_DATA_DIR")
-CHROME_PROFILE = os.getenv("CHROME_PROFILE", "Default")
-SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
-HEADLESS = os.getenv("HEADLESS", "false")
-CHROME_PATH = os.getenv("CHROME_PATH", "chrome.exe")
+# DRIVE_FOLDER_ID = os.getenv("DRIVE_FOLDER_ID")
+ALERTZY_URL         = "https://alertzy.app/send"
+ALERTZY_ACCOUNT_KEY = os.getenv("ALERTZY_ACCOUNT_KEY", "")
+CHROME_DATA_DIR     = os.getenv("CHROME_DATA_DIR", "")
+CHROME_PROFILE      = os.getenv("CHROME_PROFILE", "")
+SPREADSHEET_ID      = os.getenv("SPREADSHEET_ID", "")
+HEADLESS            = os.getenv("HEADLESS", "false")
+# CHROME_PATH = os.getenv("CHROME_PATH", "chrome.exe")
+
+# Converting paths into Path objects
+CHROME_DATA_DIR = Path(CHROME_DATA_DIR)
+CHROME_PROFILE = Path(CHROME_PROFILE)
+
+# Check if environment variables are absent
+if not ALERTZY_ACCOUNT_KEY or not CHROME_DATA_DIR or not CHROME_PROFILE or not SPREADSHEET_ID or not os.path.exists("service_account.json"):
+    if not ALERTZY_ACCOUNT_KEY:                    print("❌ Alertzy Account Key is not set. Set it inside the .env file.")
+    if not CHROME_DATA_DIR:                        print("❌ Chrome Data Directory is not set. Set it inside the .env file.")
+    if not CHROME_PROFILE:                         print("❌ Chrome Profile is not set. Set it inside the .env file.")
+    if not SPREADSHEET_ID:                         print("❌ Spreadsheet ID is not set. Set it inside the .env file.")
+    if not os.path.exists("service_account.json"): print("❌ Service Account JSON file not found. Create 'service_account.json' first.")
+    print("Scraper Exiting now...")
+    sys.exit(1)
 
 
 def initialize_project():
@@ -55,15 +71,15 @@ def find_text(parent, by, value):
     """
     try:
         return parent.find_element(by, value).text.strip()
-    except NoSuchElementException:
-        return "N/A"
+    # except NoSuchElementException:
+    #     return "N/A"
     except Exception as e:
         print(f"❌ {e}")
         print("-" * 40)
         return "N/A"
 
 
-def scrap_products(driver, wait, title_lst, price_lst, asin_lst):
+def scrap_products(wait, title_lst, price_lst, asin_lst):
     """
     Scrape product details (title, price, and ASIN) from the current page.
 
@@ -75,8 +91,7 @@ def scrap_products(driver, wait, title_lst, price_lst, asin_lst):
         asin_lst (list): List to store ASINs.
     """
     products_xpath = '//div[@data-component-type="s-search-result"]'
-    wait.until(EC.presence_of_all_elements_located((By.XPATH, products_xpath)))
-    products = driver.find_elements(By.XPATH, products_xpath)
+    products = wait.until(EC.presence_of_all_elements_located((By.XPATH, products_xpath)))
 
     for product in products:
         title = find_text(product, By.TAG_NAME, 'h2')
@@ -117,10 +132,14 @@ def send_alert(message):
         "group": group
     }
 
-    response = requests.post(url=ALERTZY_URL, json=params)
-    response.raise_for_status()
-    print(response.text)
-    print("Message Sent!")
+    try:
+        response = requests.post(url=ALERTZY_URL, json=params)
+        response.raise_for_status()
+        print(response.text)
+        print("Message Sent!")
+    except Exception as e:
+        print(f"❌ {e}")
+        print("-" * 40)
 
 
 def upload_df_to_gsheet(df, sheet_name):
@@ -131,143 +150,169 @@ def upload_df_to_gsheet(df, sheet_name):
         df (DataFrame): The DataFrame to upload.
         sheet_name (str): The name of the sheet in the spreadsheet.
     """
-    if not os.path.exists("service_account.json"):
-        print("Create 'service_account.json' first.")
-        return
+    # if not os.path.exists("service_account.json"):
+    #     print("❌ Service Account JSON file not found. Create 'service_account.json' first.")
+    #     print("❌ Uploading to Google Sheets failed.")
+    #     print("-" * 40)
+    #     return
+    for i in range(3):
+        try:
+            creds = service_account.Credentials.from_service_account_file(
+                "service_account.json",
+                scopes=["https://www.googleapis.com/auth/spreadsheets"]
+            )
+            service = build("sheets", "v4", credentials=creds)
+            spreadsheet_id = os.getenv("SPREADSHEET_ID")
 
-    creds = service_account.Credentials.from_service_account_file(
-        "service_account.json",
-        scopes=["https://www.googleapis.com/auth/spreadsheets"]
-    )
-    service = build("sheets", "v4", credentials=creds)
-    spreadsheet_id = os.getenv("SPREADSHEET_ID")
+            # Convert DataFrame to list of lists
+            values = [df.columns.tolist()] + df.values.tolist()
 
-    # Convert DataFrame to list of lists
-    values = [df.columns.tolist()] + df.values.tolist()
+            # Delete sheet if it exists
+            spreadsheet = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+            sheet_id = None
+            for sheet in spreadsheet['sheets']:
+                if sheet['properties']['title'] == sheet_name:
+                    sheet_id = sheet['properties']['sheetId']
+                    break
 
-    try:
-        # Delete sheet if it exists
-        spreadsheet = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-        sheet_id = None
-        for sheet in spreadsheet['sheets']:
-            if sheet['properties']['title'] == sheet_name:
-                sheet_id = sheet['properties']['sheetId']
-                break
+            if sheet_id is not None:
+                batch_update_request = {
+                    "requests": [
+                        {"deleteSheet": {"sheetId": sheet_id}}
+                    ]
+                }
+                service.spreadsheets().batchUpdate(
+                    spreadsheetId=spreadsheet_id,
+                    body=batch_update_request
+                ).execute()
 
-        if sheet_id is not None:
-            batch_update_request = {
+            # Add new sheet
+            add_sheet_request = {
                 "requests": [
-                    {"deleteSheet": {"sheetId": sheet_id}}
+                    {
+                        "addSheet": {
+                            "properties": {
+                                "title": sheet_name
+                            }
+                        }
+                    }
                 ]
             }
             service.spreadsheets().batchUpdate(
                 spreadsheetId=spreadsheet_id,
-                body=batch_update_request
+                body=add_sheet_request
             ).execute()
 
-        # Add new sheet
-        add_sheet_request = {
-            "requests": [
-                {
-                    "addSheet": {
-                        "properties": {
-                            "title": sheet_name
-                        }
-                    }
-                }
-            ]
-        }
-        service.spreadsheets().batchUpdate(
-            spreadsheetId=spreadsheet_id,
-            body=add_sheet_request
-        ).execute()
+            # Upload data
+            range_name = f"{sheet_name}!A1"
+            body = {
+                "values": values
+            }
+            service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=range_name,
+                valueInputOption="RAW",
+                body=body
+            ).execute()
 
-        # Upload data
-        range_name = f"{sheet_name}!A1"
-        body = {
-            "values": values
-        }
-        service.spreadsheets().values().update(
-            spreadsheetId=spreadsheet_id,
-            range=range_name,
-            valueInputOption="RAW",
-            body=body
-        ).execute()
+            print(f"✅ Uploaded to Google Sheet tab: {sheet_name}")
 
-        print(f"✅ Uploaded to Google Sheet tab: {sheet_name}")
+        except Exception as e:
+            print(f"❌ An error occurred: {e}")
+        if i != 2:
+            print("🔁 Retrying...")
+            sleep(2)
+        else: print("❌ Failed to upload after 3 retries.")
         print("-" * 40)
 
-    except HttpError as error:
-        print(f"❌ An error occurred: {error}")
-        print("-" * 40)
+
+# def create_new_profile():
+#     """Creates a new Chrome profile using Chrome's command line."""
+#     chrome_path = rf"{CHROME_PATH}"
+#     chrome_data_dir = os.getenv("CHROME_DATA_DIR")
+#     chrome_profile = os.getenv("CHROME_PROFILE", "Default")
+
+#     profile_path = os.path.join(chrome_data_dir, chrome_profile)
+
+#     # Ensure we have the proper directory
+#     if not os.path.exists(chrome_data_dir):
+#         os.makedirs(chrome_data_dir)
+
+#     # Remove old profile if it exists
+#     if os.path.exists(profile_path):
+#         shutil.rmtree(profile_path)
+
+#     print(f"Creating Chrome profile: {chrome_profile}")
+#     try:
+#         subprocess.run([
+#             "chrome",
+#             f"--user-data-dir={chrome_data_dir}",
+#             f"--profile-directory={chrome_profile}",
+#             "--headless",
+#             "--disable-gpu",
+#             "about:blank"
+#         ], timeout=3, check=True)
+#         print(f"Profile {chrome_profile} created successfully!")
+#     except Exception as e:
+#         print(f"Error running subprocess: {e}")
+
+
+# def kill_chrome_processes():
+#     """Kill any running Chrome processes."""
+#     try:
+#         for proc in psutil.process_iter(attrs=['pid', 'name']):
+#             if 'chrome' in proc.info['name'].lower():
+#                 proc.kill()
+#                 print(f"Killed Chrome process: {proc.info['pid']}")
+
+#     except psutil.NoSuchProcess as e:
+#         print(f"Error: No such process found - {e}")
+#     except psutil.AccessDenied as e:
+#         print(f"Error: Access denied to kill process - {e}")
+#     except psutil.ZombieProcess as e:
+#         print(f"Error: Zombie process encountered - {e}")
+#     except Exception as e:
+#         print(f"Unexpected error: {e}")
+
+
+# def setup_chrome_profile():
+#     """Setup Chrome profile for manual login and CAPTCHA handling."""
+#     print("\nLaunching Chrome for manual profile setup...")
+#     options = ChromeOptions()
+#     options.add_argument(f"--user-data-dir={CHROME_DATA_DIR}")
+#     options.add_argument(f"--profile-directory={CHROME_PROFILE}")
+    
+#     driver = Chrome(options=options)
+#     driver.get("https://www.google.com/")
+
+#     input("🔒 Please log in and set up your Chrome profile. Also sign in to Chrome and solve the Amazon CAPTCHA. It is a must.\n✅ Press Enter when you're finished: ")
+
+#     try:
+#         driver.quit()
+#         print("✅ Profile setup complete and browser closed.")
+#     except Exception as e:
+#         print(f"⚠️ Error during profile setup shutdown: {e}")
 
 
 def create_new_profile():
-    """Creates a new Chrome profile using Chrome's command line."""
-    chrome_path = rf"{CHROME_PATH}"
-    chrome_data_dir = os.getenv("CHROME_DATA_DIR")
-    chrome_profile = os.getenv("CHROME_PROFILE", "Default")
+    """
+    Creates a new Chrome profile directory and prompts the user to configure it manually.
+    """
+    profile_path = CHROME_DATA_DIR / CHROME_PROFILE
 
-    profile_path = os.path.join(chrome_data_dir, chrome_profile)
+    if not os.path.exists(CHROME_DATA_DIR):
+        os.makedirs(CHROME_DATA_DIR)
 
-    # Ensure we have the proper directory
-    if not os.path.exists(chrome_data_dir):
-        os.makedirs(chrome_data_dir)
-
-    # Remove old profile if it exists
     if os.path.exists(profile_path):
         shutil.rmtree(profile_path)
 
-    print(f"Creating Chrome profile: {chrome_profile}")
-    try:
-        subprocess.run([
-            "chrome",
-            f"--user-data-dir={chrome_data_dir}",
-            f"--profile-directory={chrome_profile}",
-            "--headless",
-            "--disable-gpu",
-            "about:blank"
-        ], timeout=3, check=True)
-        print(f"Profile {chrome_profile} created successfully!")
-    except Exception as e:
-        print(f"Error running subprocess: {e}")
-
-
-def kill_chrome_processes():
-    """Kill any running Chrome processes."""
-    try:
-        for proc in psutil.process_iter(attrs=['pid', 'name']):
-            if 'chrome' in proc.info['name'].lower():
-                proc.kill()
-                print(f"Killed Chrome process: {proc.info['pid']}")
-
-    except psutil.NoSuchProcess as e:
-        print(f"Error: No such process found - {e}")
-    except psutil.AccessDenied as e:
-        print(f"Error: Access denied to kill process - {e}")
-    except psutil.ZombieProcess as e:
-        print(f"Error: Zombie process encountered - {e}")
-    except Exception as e:
-        print(f"Unexpected error: {e}")
-
-
-def setup_chrome_profile():
-    """Setup Chrome profile for manual login and CAPTCHA handling."""
-    print("\nLaunching Chrome for manual profile setup...")
-    options = ChromeOptions()
-    options.add_argument(f"--user-data-dir={CHROME_DATA_DIR}")
-    options.add_argument(f"--profile-directory={CHROME_PROFILE}")
-    
-    driver = Chrome(options=options)
-    driver.get("https://www.google.com/")
-
-    input("🔒 Please log in and set up your Chrome profile. Also sign in to Chrome and solve the Amazon CAPTCHA. It is a must.\n✅ Press Enter when you're finished: ")
-
-    try:
-        driver.quit()
-        print("✅ Profile setup complete and browser closed.")
-    except Exception as e:
-        print(f"⚠️ Error during profile setup shutdown: {e}")
+    print(f"Creating Chrome profile: {CHROME_PROFILE}")
+    print("🔒 Please log in to your Google Account. Then go to Amazon and accept cookies. You do not need to sign into Amazon. This is a one-time setup requirement.\n")
+    sleep(2)
+    print("Creating Chrome Profile...")
+    sleep(2)
+    print(f"✅ Profile '{CHROME_PROFILE}' created successfully!")
+    sleep(1)
 
 
 def main():
@@ -303,17 +348,19 @@ def main():
             driver = None
             try:
                 options = ChromeOptions()
-                user_data_dir = rf"{CHROME_DATA_DIR}"
-                profile_dir = CHROME_PROFILE
                 headless = HEADLESS
+                profile_path = CHROME_DATA_DIR / CHROME_PROFILE
 
-                if user_data_dir:
-                    options.add_argument(f"--user-data-dir={user_data_dir}")
-                    options.add_argument(f"--profile-directory={profile_dir}")
+                if not os.path.exists(profile_path):
+                    create_new_profile()
+                    headless = "false"
+
+                options.add_argument(f"--user-data-dir={CHROME_DATA_DIR}")
+                options.add_argument(f"--profile-directory={CHROME_PROFILE}")
+                
                 if headless.lower() == "true":
                     options.add_argument("--headless")
-                else:
-                    print(f"Headless mode is set to: {headless}")
+                print(f"Headless mode is set to: {headless}")
 
                 search = item
 
@@ -324,8 +371,7 @@ def main():
                 wait = WebDriverWait(driver, 20)
 
                 search_xpath = '//input[@placeholder="Search Amazon" or @aria-label="Search"]'
-                wait.until(EC.presence_of_element_located((By.XPATH, search_xpath)))
-                search_box = driver.find_element(By.XPATH, search_xpath)
+                search_box = wait.until(EC.presence_of_element_located((By.XPATH, search_xpath)))
                 search_box.send_keys(search + Keys.ENTER)
 
                 title_lst = []
@@ -333,10 +379,9 @@ def main():
                 asin_lst = []
                 next_button_xpath = '//a[contains(@class, "s-pagination-next")]'
                 for i in range(3):
-                    scrap_products(driver, wait, title_lst, price_lst, asin_lst)
+                    scrap_products(wait, title_lst, price_lst, asin_lst)
                     try:
-                        wait.until(EC.presence_of_element_located((By.XPATH, next_button_xpath)))
-                        next_button = driver.find_element(By.XPATH, next_button_xpath)
+                        next_button = wait.until(EC.presence_of_element_located((By.XPATH, next_button_xpath)))
                         next_button.click()
                         sleep(randint(2, 5))
                     except Exception as e:
