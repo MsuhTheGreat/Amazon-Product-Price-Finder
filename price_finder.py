@@ -184,10 +184,12 @@ def send_alert(message):
     try:
         response = requests.post(ALERTZY_URL, json=payload)
         response.raise_for_status()
-        print("📲 Notification sent!")
-        print(f"Response Text: {response.text}")
+        print(f"📲 Notification successfully sent to your Alertzy account due to a price drop of {PERCENTAGE_THRESHOLD}% or more since your last check.")
     except Exception as e:
-        print(f"❌ Failed to send alert: {e}")
+        error_str = str(e)
+        if ALERTZY_API_KEY in error_str:
+            error_str = error_str.replace(ALERTZY_API_KEY, "[SECRET]")
+        print(f"❌ Failed to send alert: {error_str}")
         print("-" * 40)
 
 def upload_df_to_gsheet(df, sheet_name):
